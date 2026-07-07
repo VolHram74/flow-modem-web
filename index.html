@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Расходомер — монитор</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 1.5rem;
+      background: #111;
+      color: #eee;
+    }
+    h1 { font-size: 1.25rem; margin-bottom: 0.5rem; }
+    .meta { color: #aaa; font-size: 0.9rem; margin-bottom: 0.75rem; }
+    .main {
+      display: flex;
+      gap: 1rem;
+      align-items: flex-start;
+      max-width: 1180px;
+    }
+    .chart-wrap {
+      flex: 1;
+      min-width: 0;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 280px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 4px;
+    }
+    .chart-caption {
+      color: #888;
+      font-size: 0.85rem;
+      margin-top: 0.35rem;
+    }
+    .data-panel {
+      width: 270px;
+      flex-shrink: 0;
+    }
+    .data-head {
+      display: grid;
+      grid-template-columns: 1fr 4.5rem;
+      gap: 0.4rem;
+      padding: 0.45rem 0.6rem;
+      color: #8cf;
+      font-size: 0.9rem;
+      border-bottom: 1px solid #333;
+      background: #161616;
+    }
+    .data-scroll {
+      height: 280px;
+      overflow-y: auto;
+      border: 1px solid #333;
+      border-top: none;
+      border-radius: 0 0 4px 4px;
+      background: #1a1a1a;
+    }
+    .data-row {
+      display: grid;
+      grid-template-columns: 1fr 4.5rem;
+      gap: 0.4rem;
+      padding: 0.4rem 0.6rem;
+      border-bottom: 1px solid #2a2a2a;
+      font-size: 0.85rem;
+    }
+    .data-row .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .empty {
+      color: #666;
+      padding: 1rem 0.6rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>Расходомер</h1>
+  <p class="meta" id="status">Загрузка…</p>
+
+  <div class="main">
+    <div class="chart-wrap">
+      <canvas id="chart" width="860" height="280"></canvas>
+      <p class="chart-caption" id="chartCaption">График: до 1000 точек</p>
+    </div>
+
+    <div class="data-panel">
+      <div class="data-head">
+        <span>Время</span>
+        <span style="text-align:right">Расход</span>
+      </div>
+      <div class="data-scroll" id="dataScroll">
+        <div class="empty">Нет данных</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const MAX_CHART_POINTS = 1000;
+    const statusEl = document.getElementById("status");
+    const chartEl = document.getElementById("chart");
+    const chartCaptionEl = document.getElementById("chartCaption");
+    const dataScrollEl = document.getElementById("dataScroll");
+    const ctx = chartEl.getContext("2d");
+
+    function fmtTime(ts) {
+      return new Date(ts * 1000).toLocaleString("ru-RU", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+
+    function fmtTimeShort(ts) {
+      return new Date(ts * 1000).toLocaleTimeString("ru-RU", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+
+    function drawChart(data) {
+      const w = chartEl.width;
+      const h = chartEl.height;
+      const padL = 52;
+      const padR = 16;
+      const padT = 16;
+      const padB = 32;
+      const plotW = w - padL - padR;
+      const plotH = h - padT - padB;
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#1a1a1a";
+      ctx.fillRect(0, 0, w, h);
+
+      if (!data.length) {
+        ctx.fillStyle = "#666";
+        ctx.font = "14px system-ui, sans-serif";
+        ctx.fillText("Нет данных для графика", padL, h / 2);
+        chartCaptionEl.textContent = "График: до " + MAX_CHART_POINTS + " точек";
+        return;
+      }
+
+      const points = data.slice(-MAX_CHART_POINTS);
+      let yMin = points[0].flow;
+      let yMax = points[0].flow;
+      for (const p of points) {
+        if (p.flow < yMin) yMin = p.flow;
+        if (p.flow > yMax) yMax = p.flow;
+      }
+      if (yMin === yMax) {
+        yMin -= 1;
+        yMax += 1;
+      } else {
+        const pad = (yMax - yMin) * 0.1 || 0.5;
+        yMin -= pad;
+        yMax += pad;
+      }
+
+      ctx.strokeStyle = "#2a2a2a";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padT + (plotH * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(w - padR, y);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = "#888";
+      ctx.font = "12px system-ui, sans-serif";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      for (let i = 0; i <= 4; i++) {
+        const val = yMax - ((yMax - yMin) * i) / 4;
+        const y = padT + (plotH * i) / 4;
+        ctx.fillText(val.toFixed(2), padL - 8, y);
+      }
+
+      ctx.strokeStyle = "#4fd1c5";
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      for (let i = 0; i < points.length; i++) {
+        const x = padL + (plotW * i) / Math.max(points.length - 1, 1);
+        const y = padT + plotH * (1 - (points[i].flow - yMin) / (yMax - yMin));
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      ctx.fillStyle = "#aaa";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(fmtTimeShort(points[0].ts), padL, h - padB + 8);
+      ctx.textAlign = "right";
+      ctx.fillText(fmtTimeShort(points[points.length - 1].ts), w - padR, h - padB + 8);
+
+      const last = points[points.length - 1].flow;
+      chartCaptionEl.textContent =
+        "На графике: " + points.length + " из " + data.length +
+        " · последнее: " + last.toFixed(2);
+    }
+
+    function renderList(data) {
+      const wasAtTop = dataScrollEl.scrollTop < 8;
+
+      if (!data.length) {
+        dataScrollEl.innerHTML = '<div class="empty">Нет данных</div>';
+        return;
+      }
+
+      const rows = data.slice().reverse();
+      dataScrollEl.innerHTML = rows.map(row =>
+        '<div class="data-row"><span>' + fmtTime(row.ts) +
+        '</span><span class="num">' + row.flow.toFixed(2) + '</span></div>'
+      ).join("");
+
+      if (wasAtTop) {
+        dataScrollEl.scrollTop = 0;
+      }
+    }
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/readings");
+        const data = await r.json();
+        statusEl.textContent =
+          "Записей: " + data.length + " · обновлено " +
+          new Date().toLocaleTimeString("ru-RU");
+
+        drawChart(data);
+        renderList(data);
+      } catch (e) {
+        statusEl.textContent = "Ошибка: " + e.message;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
