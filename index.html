@@ -37,6 +37,28 @@
       font-size: 0.85rem;
       margin-top: 0.35rem;
     }
+    .log-title {
+      margin: 0.8rem 0 0.35rem;
+      color: #aaa;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+    .log-scroll {
+      height: 220px;
+      overflow-y: auto;
+      border: 1px solid #333;
+      border-radius: 4px;
+      background: #1a1a1a;
+    }
+    .log-row {
+      padding: 0.45rem 0.6rem;
+      border-bottom: 1px solid #2a2a2a;
+      font-size: 0.85rem;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: Consolas, "Courier New", monospace;
+    }
     .data-panel {
       width: 270px;
       flex-shrink: 0;
@@ -85,6 +107,10 @@
     <div class="chart-wrap">
       <canvas id="chart" width="860" height="280"></canvas>
       <p class="chart-caption" id="chartCaption">График: до 1000 точек</p>
+      <div class="log-title">Сырые строки</div>
+      <div class="log-scroll" id="logScroll">
+        <div class="empty">Нет строк</div>
+      </div>
     </div>
 
     <div class="data-panel">
@@ -104,6 +130,7 @@
     const chartEl = document.getElementById("chart");
     const chartCaptionEl = document.getElementById("chartCaption");
     const dataScrollEl = document.getElementById("dataScroll");
+    const logScrollEl = document.getElementById("logScroll");
     const ctx = chartEl.getContext("2d");
 
     function fmtTime(ts) {
@@ -226,16 +253,40 @@
       }
     }
 
+    function renderLogs(rows) {
+      const wasAtTop = logScrollEl.scrollTop < 8;
+
+      if (!rows.length) {
+        logScrollEl.innerHTML = '<div class="empty">Нет строк</div>';
+        return;
+      }
+
+      const items = rows.slice().reverse();
+      logScrollEl.innerHTML = items.map(row =>
+        '<div class="log-row">[' + fmtTime(row.ts) + '] ' + row.raw + '</div>'
+      ).join("");
+
+      if (wasAtTop) {
+        logScrollEl.scrollTop = 0;
+      }
+    }
+
     async function refresh() {
       try {
-        const r = await fetch("/api/readings");
-        const data = await r.json();
+        const [readingsResp, logsResp] = await Promise.all([
+          fetch("/api/readings"),
+          fetch("/api/logs")
+        ]);
+        const data = await readingsResp.json();
+        const logs = await logsResp.json();
         statusEl.textContent =
-          "Записей: " + data.length + " · обновлено " +
-          new Date().toLocaleTimeString("ru-RU");
+          "Сырых строк: " + logs.length +
+          " · валидных значений: " + data.length +
+          " · обновлено " + new Date().toLocaleTimeString("ru-RU");
 
         drawChart(data);
         renderList(data);
+        renderLogs(logs);
       } catch (e) {
         statusEl.textContent = "Ошибка: " + e.message;
       }
