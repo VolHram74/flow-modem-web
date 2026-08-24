@@ -16,7 +16,7 @@ readings = []
 modem_logs = []
 DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(DIR, "server_errors.log")
-FLOW_RE = re.compile(r"^\d{1,4}\.\d(?:\d)?$")
+FLOW_RE = re.compile(r"^-?\d{1,4}\.\d(?:\d)?$")
 
 
 def setup_logging():
@@ -36,7 +36,11 @@ log = setup_logging()
 
 
 def parse_line(line):
-    head = line.lstrip().split(";", 1)[0]
+    stripped = line.lstrip()
+    head = stripped.split(";", 1)[0]
+    if stripped.startswith(";"):
+        ts = int(datetime.now(timezone.utc).timestamp())
+        return ts, 0.0
     if not FLOW_RE.fullmatch(head):
         return None
     ts = int(datetime.now(timezone.utc).timestamp())
