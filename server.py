@@ -17,6 +17,7 @@ modem_logs = []
 DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(DIR, "server_errors.log")
 FLOW_RE = re.compile(r"^-?\d{1,4}\.\d(?:\d)?$")
+TIMESTAMP_RE = re.compile(r"ts=([0-9]{1,12}(?:\.[0-9]{1,3})?)")
 
 
 def setup_logging():
@@ -36,14 +37,22 @@ log = setup_logging()
 
 
 def parse_line(line):
-    stripped = line.lstrip()
+    timestamp, separator, meter_line = line.strip().partition(";")
+    match = TIMESTAMP_RE.fullmatch(timestamp)
+    if not separator or not match:
+        return None
+
+    # Keep the ESP's UTC timestamp, including milliseconds; never substitute receive time.
+    ts = float(match.group(1))
+    if not 0 < ts < 253402300800:
+        return None
+
+    stripped = meter_line.lstrip()
     head = stripped.split(";", 1)[0]
     if stripped.startswith(";"):
-        ts = int(datetime.now(timezone.utc).timestamp())
         return ts, 0.0
     if not FLOW_RE.fullmatch(head):
         return None
-    ts = int(datetime.now(timezone.utc).timestamp())
     return ts, float(head)
 
 
