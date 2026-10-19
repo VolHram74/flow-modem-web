@@ -1,302 +1,154 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Расходомер — монитор</title>
-  <style>
-    :root { color-scheme: dark; }
-    body {
-      font-family: system-ui, sans-serif;
-      margin: 1.5rem;
-      background: #111;
-      color: #eee;
-    }
-    h1 { font-size: 1.25rem; margin-bottom: 0.5rem; }
-    .meta { color: #aaa; font-size: 0.9rem; margin-bottom: 0.75rem; }
-    .main {
-      display: flex;
-      gap: 1rem;
-      align-items: flex-start;
-      max-width: 1180px;
-    }
-    .chart-wrap {
-      flex: 1;
-      min-width: 0;
-    }
-    canvas {
-      display: block;
-      width: 100%;
-      height: 280px;
-      background: #1a1a1a;
-      border: 1px solid #333;
-      border-radius: 4px;
-    }
-    .chart-caption {
-      color: #888;
-      font-size: 0.85rem;
-      margin-top: 0.35rem;
-    }
-    .log-title {
-      margin: 0.8rem 0 0.35rem;
-      color: #aaa;
-      font-size: 0.95rem;
-      font-weight: 600;
-    }
-    .log-scroll {
-      height: 220px;
-      overflow-y: auto;
-      border: 1px solid #333;
-      border-radius: 4px;
-      background: #1a1a1a;
-    }
-    .log-row {
-      padding: 0.45rem 0.6rem;
-      border-bottom: 1px solid #2a2a2a;
-      font-size: 0.85rem;
-      line-height: 1.35;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-family: Consolas, "Courier New", monospace;
-    }
-    .data-panel {
-      width: 270px;
-      flex-shrink: 0;
-    }
-    .data-head {
-      display: grid;
-      grid-template-columns: 1fr 4.5rem;
-      gap: 0.4rem;
-      padding: 0.45rem 0.6rem;
-      color: #8cf;
-      font-size: 0.9rem;
-      border-bottom: 1px solid #333;
-      background: #161616;
-    }
-    .data-scroll {
-      height: 280px;
-      overflow-y: auto;
-      border: 1px solid #333;
-      border-top: none;
-      border-radius: 0 0 4px 4px;
-      background: #1a1a1a;
-    }
-    .data-row {
-      display: grid;
-      grid-template-columns: 1fr 4.5rem;
-      gap: 0.4rem;
-      padding: 0.4rem 0.6rem;
-      border-bottom: 1px solid #2a2a2a;
-      font-size: 0.85rem;
-    }
-    .data-row .num {
-      text-align: right;
-      font-variant-numeric: tabular-nums;
-    }
-    .empty {
-      color: #666;
-      padding: 1rem 0.6rem;
-    }
-  </style>
-</head>
-<body>
-  <h1>Расходомер</h1>
-  <p class="meta" id="status">Загрузка…</p>
+#!/usr/bin/env python3
+import json
+import logging
+import os
+import re
+import socket
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from logging.handlers import TimedRotatingFileHandler
+from urllib.parse import urlparse
 
-  <div class="main">
-    <div class="chart-wrap">
-      <canvas id="chart" width="860" height="280"></canvas>
-      <p class="chart-caption" id="chartCaption">График: до 1000 точек</p>
-      <div class="log-title">Сырые строки</div>
-      <div class="log-scroll" id="logScroll">
-        <div class="empty">Нет строк</div>
-      </div>
-    </div>
+PORT = int(os.environ.get("PORT", "8765"))
+MAX_READINGS = 1000
+MAX_LOG_LINES = 1000
+readings = []
+modem_logs = []
+DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(DIR, "server_errors.log")
+FLOW_RE = re.compile(r"^-?\d{1,4}\.\d(?:\d)?$")
 
-    <div class="data-panel">
-      <div class="data-head">
-        <span>Время</span>
-        <span style="text-align:right">Расход</span>
-      </div>
-      <div class="data-scroll" id="dataScroll">
-        <div class="empty">Нет данных</div>
-      </div>
-    </div>
-  </div>
 
-  <script>
-    const MAX_CHART_POINTS = 1000;
-    const statusEl = document.getElementById("status");
-    const chartEl = document.getElementById("chart");
-    const chartCaptionEl = document.getElementById("chartCaption");
-    const dataScrollEl = document.getElementById("dataScroll");
-    const logScrollEl = document.getElementById("logScroll");
-    const ctx = chartEl.getContext("2d");
+def setup_logging():
+    logger = logging.getLogger("flow_server")
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.ERROR)
+    handler = TimedRotatingFileHandler(
+        LOG_FILE, when="midnight", backupCount=0, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    logger.addHandler(handler)
+    return logger
 
-    function fmtTime(ts) {
-      return new Date(ts * 1000).toLocaleString("ru-RU", {
-        day: "2-digit",
-        month: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      });
-    }
 
-    function fmtTimeShort(ts) {
-      return new Date(ts * 1000).toLocaleTimeString("ru-RU", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      });
-    }
+log = setup_logging()
 
-    function drawChart(data) {
-      const w = chartEl.width;
-      const h = chartEl.height;
-      const padL = 52;
-      const padR = 16;
-      const padT = 16;
-      const padB = 32;
-      const plotW = w - padL - padR;
-      const plotH = h - padT - padB;
 
-      ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = "#1a1a1a";
-      ctx.fillRect(0, 0, w, h);
+def parse_line(line):
+    stripped = line.lstrip()
+    head = stripped.split(";", 1)[0]
+    if stripped.startswith(";"):
+        ts = int(datetime.now(timezone.utc).timestamp())
+        return ts, 0.0
+    if not FLOW_RE.fullmatch(head):
+        return None
+    ts = int(datetime.now(timezone.utc).timestamp())
+    return ts, float(head)
 
-      if (!data.length) {
-        ctx.fillStyle = "#666";
-        ctx.font = "14px system-ui, sans-serif";
-        ctx.fillText("Нет данных для графика", padL, h / 2);
-        chartCaptionEl.textContent = "График: до " + MAX_CHART_POINTS + " точек";
-        return;
-      }
 
-      const points = data.slice(-MAX_CHART_POINTS);
-      let yMin = points[0].flow;
-      let yMax = points[0].flow;
-      for (const p of points) {
-        if (p.flow < yMin) yMin = p.flow;
-        if (p.flow > yMax) yMax = p.flow;
-      }
-      if (yMin === yMax) {
-        yMin -= 1;
-        yMax += 1;
-      } else {
-        const pad = (yMax - yMin) * 0.1 || 0.5;
-        yMin -= pad;
-        yMax += pad;
-      }
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        try:
+            if len(args) >= 2 and int(args[1]) >= 400:
+                log.error("%s", args[0])
+        except (ValueError, TypeError):
+            pass
 
-      ctx.strokeStyle = "#2a2a2a";
-      ctx.lineWidth = 1;
-      for (let i = 0; i <= 4; i++) {
-        const y = padT + (plotH * i) / 4;
-        ctx.beginPath();
-        ctx.moveTo(padL, y);
-        ctx.lineTo(w - padR, y);
-        ctx.stroke();
-      }
+    def do_POST(self):
+        try:
+            if urlparse(self.path).path != "/api/data":
+                self.send_error(404)
+                return
 
-      ctx.fillStyle = "#888";
-      ctx.font = "12px system-ui, sans-serif";
-      ctx.textAlign = "right";
-      ctx.textBaseline = "middle";
-      for (let i = 0; i <= 4; i++) {
-        const val = yMax - ((yMax - yMin) * i) / 4;
-        const y = padT + (plotH * i) / 4;
-        ctx.fillText(val.toFixed(2), padL - 8, y);
-      }
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8", errors="replace")
+            added = 0
+            recv_at = datetime.now(timezone.utc).isoformat()
+            recv_ts = int(datetime.now(timezone.utc).timestamp())
 
-      ctx.strokeStyle = "#4fd1c5";
-      ctx.lineWidth = 2;
-      ctx.lineJoin = "round";
-      ctx.beginPath();
-      for (let i = 0; i < points.length; i++) {
-        const x = padL + (plotW * i) / Math.max(points.length - 1, 1);
-        const y = padT + plotH * (1 - (points[i].flow - yMin) / (yMax - yMin));
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
+            for line in body.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
 
-      ctx.fillStyle = "#aaa";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "top";
-      ctx.fillText(fmtTimeShort(points[0].ts), padL, h - padB + 8);
-      ctx.textAlign = "right";
-      ctx.fillText(fmtTimeShort(points[points.length - 1].ts), w - padR, h - padB + 8);
+                modem_logs.append({"ts": recv_ts, "recv_at": recv_at, "raw": line})
+                while len(modem_logs) > MAX_LOG_LINES:
+                    modem_logs.pop(0)
 
-      const last = points[points.length - 1].flow;
-      chartCaptionEl.textContent =
-        "На графике: " + points.length + " из " + data.length +
-        " · последнее: " + last.toFixed(2);
-    }
+                parsed = parse_line(line)
+                if not parsed:
+                    continue
+                ts, flow = parsed
+                readings.append({"ts": ts, "flow": flow, "recv_at": recv_at})
+                added += 1
 
-    function renderList(data) {
-      const wasAtTop = dataScrollEl.scrollTop < 8;
+            while len(readings) > MAX_READINGS:
+                readings.pop(0)
 
-      if (!data.length) {
-        dataScrollEl.innerHTML = '<div class="empty">Нет данных</div>';
-        return;
-      }
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b"OK")
+        except Exception:
+            log.exception("POST /api/data failed")
+            self.send_error(500)
 
-      const rows = data.slice().reverse();
-      dataScrollEl.innerHTML = rows.map(row =>
-        '<div class="data-row"><span>' + fmtTime(row.ts) +
-        '</span><span class="num">' + row.flow.toFixed(2) + '</span></div>'
-      ).join("");
+    def do_GET(self):
+        try:
+            path = urlparse(self.path).path
 
-      if (wasAtTop) {
-        dataScrollEl.scrollTop = 0;
-      }
-    }
+            if path == "/api/readings":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps(readings).encode("utf-8"))
+                return
 
-    function renderLogs(rows) {
-      const wasAtTop = logScrollEl.scrollTop < 8;
+            if path == "/api/logs":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps(modem_logs).encode("utf-8"))
+                return
 
-      if (!rows.length) {
-        logScrollEl.innerHTML = '<div class="empty">Нет строк</div>';
-        return;
-      }
+            if path in ("/", "/index.html"):
+                with open(os.path.join(DIR, "index.html"), "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(data)
+                return
 
-      const items = rows.slice().reverse();
-      logScrollEl.replaceChildren(...items.map(row => {
-        const element = document.createElement("div");
-        element.className = "log-row";
-        element.textContent = row.raw;
-        return element;
-      }));
+            self.send_error(404)
+        except Exception:
+            log.exception("GET %s failed", self.path)
+            self.send_error(500)
 
-      if (wasAtTop) {
-        logScrollEl.scrollTop = 0;
-      }
-    }
 
-    async function refresh() {
-      try {
-        const [readingsResp, logsResp] = await Promise.all([
-          fetch("/api/readings"),
-          fetch("/api/logs")
-        ]);
-        const data = await readingsResp.json();
-        const logs = await logsResp.json();
-        statusEl.textContent =
-          "Сырых строк: " + logs.length +
-          " · валидных значений: " + data.length +
-          " · обновлено " + new Date().toLocaleTimeString("ru-RU");
+def local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
 
-        drawChart(data);
-        renderList(data);
-        renderLogs(logs);
-      } catch (e) {
-        statusEl.textContent = "Ошибка: " + e.message;
-      }
-    }
 
-    refresh();
-    setInterval(refresh, 2000);
-  </script>
-</body>
-</html>
+def main():
+    ip = local_ip()
+    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    print(f"Browser:  http://127.0.0.1:{PORT}/")
+    print(f"Modem POST http://{ip}:{PORT}/api/data")
+    print(f"Errors:   {LOG_FILE}")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
