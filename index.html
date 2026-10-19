@@ -262,9 +262,12 @@
       }
 
       const items = rows.slice().reverse();
-      logScrollEl.innerHTML = items.map(row =>
-        '<div class="log-row">[' + fmtTime(row.ts) + '] ' + row.raw + '</div>'
-      ).join("");
+      logScrollEl.replaceChildren(...items.map(row => {
+        const element = document.createElement("div");
+        element.className = "log-row";
+        element.textContent = row.raw;
+        return element;
+      }));
 
       if (wasAtTop) {
         logScrollEl.scrollTop = 0;
