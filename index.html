@@ -12,7 +12,26 @@
       background: #111;
       color: #eee;
     }
-    h1 { font-size: 1.25rem; margin-bottom: 0.5rem; }
+    h1 { font-size: 1.25rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+    .data-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.2rem 0.6rem;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      color: #ff7373;
+      background: #301919;
+    }
+    .data-indicator::before {
+      content: "";
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .data-indicator.on { color: #65df8a; background: #163321; }
     .meta { color: #aaa; font-size: 0.9rem; margin-bottom: 0.75rem; }
     .main {
       display: flex;
@@ -100,7 +119,7 @@
   </style>
 </head>
 <body>
-  <h1>Расходомер</h1>
+  <h1>Расходомер <span id="dataIndicator" class="data-indicator" role="status" aria-live="polite">Data OFF</span></h1>
   <p class="meta" id="status">Загрузка…</p>
 
   <div class="main">
@@ -126,12 +145,20 @@
 
   <script>
     const MAX_CHART_POINTS = 1000;
+    const dataIndicatorEl = document.getElementById("dataIndicator");
+    let dataExpiryTimer;
     const statusEl = document.getElementById("status");
     const chartEl = document.getElementById("chart");
     const chartCaptionEl = document.getElementById("chartCaption");
     const dataScrollEl = document.getElementById("dataScroll");
     const logScrollEl = document.getElementById("logScroll");
     const ctx = chartEl.getContext("2d");
+
+    function setDataIndicator(on) {
+      clearTimeout(dataExpiryTimer);
+      dataIndicatorEl.textContent = on ? "Data ON" : "Data OFF";
+      dataIndicatorEl.classList.toggle("on", on);
+    }
 
     function fmtTime(ts) {
       return new Date(ts * 1000).toLocaleString("ru-RU", {
@@ -275,13 +302,23 @@
     }
 
     async function refresh() {
+      const requestStarted = performance.now();
       try {
-        const [readingsResp, logsResp] = await Promise.all([
-          fetch("/api/readings"),
-          fetch("/api/logs")
+        const responses = await Promise.all([
+          fetch("/api/readings", { cache: "no-store" }),
+          fetch("/api/logs", { cache: "no-store" }),
+          fetch("/api/status", { cache: "no-store" })
         ]);
-        const data = await readingsResp.json();
-        const logs = await logsResp.json();
+        for (const response of responses) {
+          if (!response.ok) throw new Error("HTTP " + response.status);
+        }
+        const [data, logs, state] = await Promise.all(responses.map(response => response.json()));
+        const remainingMs = state.expires_in_ms - (performance.now() - requestStarted);
+        const dataOn = state.data_on === true && remainingMs > 0;
+        setDataIndicator(dataOn);
+        if (dataOn) {
+          dataExpiryTimer = setTimeout(() => setDataIndicator(false), remainingMs);
+        }
         statusEl.textContent =
           "Сырых строк: " + logs.length +
           " · валидных значений: " + data.length +
@@ -291,12 +328,14 @@
         renderList(data);
         renderLogs(logs);
       } catch (e) {
+        setDataIndicator(false);
         statusEl.textContent = "Ошибка: " + e.message;
+      } finally {
+        setTimeout(refresh, 2000);
       }
     }
 
     refresh();
-    setInterval(refresh, 2000);
   </script>
 </body>
 </html>
