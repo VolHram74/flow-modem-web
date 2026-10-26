@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import socket
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from logging.handlers import TimedRotatingFileHandler
@@ -12,6 +13,8 @@ from urllib.parse import urlparse
 PORT = int(os.environ.get("PORT", "8765"))
 MAX_READINGS = 1000
 MAX_LOG_LINES = 1000
+DATA_TIMEOUT_SECONDS = 10
+last_data_received = None
 readings = []
 modem_logs = []
 DIR = os.path.dirname(os.path.abspath(__file__))
@@ -65,6 +68,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def do_POST(self):
+        global last_data_received
         try:
             if urlparse(self.path).path != "/api/data":
                 self.send_error(404)
@@ -86,6 +90,8 @@ class Handler(BaseHTTPRequestHandler):
                     modem_logs.pop(0)
 
                 parsed = parse_line(line)
+                # Heartbeats and invalid lines are not flow measurements.
+                last_data_received = time.monotonic() if parsed is not None else None
                 if not parsed:
                     continue
                 ts, flow = parsed
@@ -107,6 +113,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             path = urlparse(self.path).path
+
+            if path == "/api/status":
+                remaining = 0 if last_data_received is None else max(
+                    0, DATA_TIMEOUT_SECONDS - (time.monotonic() - last_data_received)
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "data_on": remaining > 0,
+                    "expires_in_ms": int(remaining * 1000),
+                }).encode("utf-8"))
+                return
 
             if path == "/api/readings":
                 self.send_response(200)
